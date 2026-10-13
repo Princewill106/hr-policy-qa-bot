@@ -1,0 +1,222 @@
+{
+  "name": "HR Policy Q&A Bot (AI Automation Projects #21)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "hr-question",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "37b3adf4-a8c6-581e-ad01-e0a6f68fd3a9",
+      "name": "Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "webhookId": "b6dc1b83-6fbf-54dc-88b2-a73a442df766"
+    },
+    {
+      "parameters": {},
+      "id": "421c2cae-96d3-5c2e-a189-61480d26cdfa",
+      "name": "Test with sample data",
+      "type": "n8n-nodes-base.manualTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Sample data from this repo. Click 'Test workflow' to run the whole flow on it.\nconst sample = [\n {\n  \"question\": \"How many annual leave days do I get?\"\n },\n {\n  \"question\": \"What is the transport allowance for client visits?\"\n },\n {\n  \"question\": \"Who approves overtime?\"\n },\n {\n  \"question\": \"What's the company's stance on crypto investments?\"\n }\n];\nreturn sample.map(json => ({ json }));"
+      },
+      "id": "dbce4857-0b83-5c93-baed-03f3a778e500",
+      "name": "Sample data",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        260
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// HR Policy Q&A Bot: core logic (ported from main.py)\nconst HANDBOOK = \"# Staff Handbook (sample)\\n\\n## Annual leave\\nFull-time staff receive 20 working days of annual leave per year. Leave accrues monthly and up to 5 unused days can be carried into the next year. Requests must be submitted at least two weeks in advance through your line manager.\\n\\n## Sick leave\\nStaff are entitled to 10 paid sick days per year. A medical certificate is required for absences longer than two consecutive days.\\n\\n## Remote work\\nStaff may work remotely up to two days per week with their manager's approval. Fridays are remote-friendly by default unless a client meeting is scheduled. Core hours are 10am to 3pm.\\n\\n## Overtime\\nOvertime must be approved in advance by your head of department. Approved overtime is paid at 1.5 times the hourly rate or taken as time off in lieu within one month.\\n\\n## Travel and transport\\nTransport for client visits within Lagos is reimbursed up to NGN 15,000 per day with receipts. Inter-state travel requires a travel request approved by the operations manager, and hotel stays are capped at NGN 60,000 per night.\\n\\n## Code of conduct\\nStaff must treat colleagues and clients with respect. Harassment of any kind is not tolerated and should be reported to HR or the confidential whistleblowing line.\\n\";\n// ---- input normaliser (works for Webhook, Form, WhatsApp, Gmail, Sheets and sample data)\nconst input = $input.all().flatMap(i => {\n  const j = i.json || {};\n  if (j.messages && Array.isArray(j.messages)) {           // WhatsApp Trigger\n    return j.messages.filter(m => m.text).map(m => ({ from: '+' + m.from, text: m.text.body }));\n  }\n  if (j.Subject !== undefined || j.From !== undefined) {     // Gmail Trigger (simple)\n    return [{ from: (j.From || '').replace(/.*<|>.*/g, ''), subject: j.Subject || '', body: j.snippet || j.text || '' }];\n  }\n  const b = (j.body !== undefined && j.headers !== undefined) ? j.body : j;   // Webhook wraps payload in body\n  if (Array.isArray(b)) return b;\n  if (b && Array.isArray(b.items)) return b.items;\n  return [b];\n});\n\nconst STOP = new Set('a an the of to and or in on for is are do does i my me we our can how what when who with be at by it this that if as from you your get much many'.split(' '));\nconst tok = s => (s.toLowerCase().match(/[a-z0-9]+/g) || []).filter(t => !STOP.has(t)).map(t => t.endsWith('s') && t.length > 3 ? t.slice(0, -1) : t);\nconst secs = HANDBOOK.split(/^##\\s+/m).slice(1).map(p => { const [title, ...rest] = p.split('\\n'); return { title: title.trim(), text: rest.join(' ').trim() }; });\nconst tfs = secs.map(s => tok(s.title + ' ' + s.text).reduce((m, t) => (m[t] = (m[t] || 0) + 1, m), {}));\nconst df = {}; tfs.forEach(tf => Object.keys(tf).forEach(t => df[t] = (df[t] || 0) + 1));\nconst idf = t => Math.log((secs.length + 1) / ((df[t] || 0) + 1)) + 1;\nconst vec = tf => { const v = {}; let n = 0; for (const [t, c] of Object.entries(tf)) { v[t] = c * idf(t); n += v[t] ** 2; } n = Math.sqrt(n) || 1; for (const t in v) v[t] /= n; return v; };\nconst vs = tfs.map(vec);\nreturn input.map(({ question }) => {\n  const qv = vec(tok(question).reduce((m, t) => (m[t] = (m[t] || 0) + 1, m), {}));\n  const scores = vs.map(v => Object.keys(qv).reduce((s, t) => s + qv[t] * (v[t] || 0), 0));\n  const i = scores.indexOf(Math.max(...scores)), conf = Math.round(scores[i] * 100) / 100;\n  if (conf < 0.25) return { json: { route: 'ask HR', question, answer: \"I'm not sure the handbook covers that. I've passed your question to HR.\", source: null, confidence: conf } };\n  const qt = new Set(tok(question));\n  const best = secs[i].text.split(/(?<=[.!?])\\s+/).sort((a, b) => tok(b).filter(t => qt.has(t)).length - tok(a).filter(t => qt.has(t)).length).slice(0, 2).join(' ');\n  return { json: { route: 'answered', question, answer: best, source: secs[i].title, confidence: conf } };\n});\n"
+      },
+      "id": "bb64f040-2d44-5400-acbd-3309275593a4",
+      "name": "Logic",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "allIncomingItems",
+        "options": {}
+      },
+      "id": "4d51d936-d76f-52c0-bb43-af26751d1a7f",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        720,
+        -120
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "loose",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "c5010b7a-4024-5519-b73a-8fea1f3de654",
+                    "leftValue": "={{ $json.route }}",
+                    "rightValue": "ask HR",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "ask HR"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "2a78d0c5-4007-579a-8bd8-6793ddde7014",
+      "name": "Route",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.2,
+      "position": [
+        720,
+        120
+      ]
+    },
+    {
+      "parameters": {
+        "select": "channel",
+        "channelId": {
+          "__rl": true,
+          "value": "#hr",
+          "mode": "name"
+        },
+        "text": "=Unanswered policy question: {{ $json.question }}",
+        "otherOptions": {}
+      },
+      "id": "2ff10123-4095-5118-8825-4a8b1902bd31",
+      "name": "Forward to HR (Slack)",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        980,
+        120
+      ],
+      "webhookId": "2ff10123-4095-5118-8825-4a8b1902bd31"
+    },
+    {
+      "parameters": {
+        "content": "## HR Policy Q&A Bot\nStaff ask in plain English; the bot answers from the handbook and cites the section, or says it doesn't know.\n\nPOST `{question}` from Slack, WhatsApp or a web chat. The handbook (HANDBOOK constant; paste your own with ## headings) is split into sections and ranked with TF-IDF. The answer quotes the best section and cites it; low-confidence questions are routed to HR instead of guessed.\n\n**Try it:** click *Test workflow* to run on the sample data. Then connect your credentials on the output nodes and activate.\n\nCode and docs: github.com/Princewill106/hr-policy-qa-bot",
+        "height": 340,
+        "width": 420,
+        "color": 5
+      },
+      "id": "1cb28aab-5738-5976-8b07-e1f55ffbdb35",
+      "name": "About this workflow",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -460
+      ]
+    }
+  ],
+  "connections": {
+    "Test with sample data": {
+      "main": [
+        [
+          {
+            "node": "Sample data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Sample data": {
+      "main": [
+        [
+          {
+            "node": "Logic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Logic": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Route",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route": {
+      "main": [
+        [
+          {
+            "node": "Forward to HR (Slack)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "pinData": {},
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "active": false,
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}
